@@ -1,0 +1,30 @@
+version: "3"
+services:
+    
+    # FRONT
+    easyweek-website-business-front:
+        image: "easyweek-website-business-front"
+        build:
+            context: .
+            args:
+                APP_ENV: local
+        restart: always
+        hostname: easyweek-website-business-front
+        container_name: easyweek-website-business-front
+        ports:
+            - "3000:3000"
+        volumes:
+            - ./:/app:delegated
+        environment:
+            CLOUD_ASSETS: development
+        networks:
+            easyweek-website-business:
+                ipv4_address: 172.58.0.4
+
+    
+networks:
+    easyweek-website-business:
+        ipam:
+            driver: default
+            config:
+                - subnet: 172.58.0.0/24

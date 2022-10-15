@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+  labels:
+    app: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 33%
+  template:
+    metadata:
+      labels:
+        app: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+    spec:
+      volumes:
+        # Create the shared files volume to be used in both pods
+        - name: shared-files
+          emptyDir: {}
+      containers:
+        - name: front
+          imagePullPolicy: IfNotPresent
+          image: <SERVICE_GIT_URL>:<VERSION>-front
+          envFrom:
+          - configMapRef:
+              name: <SERVICE_NAME>-<NAMESPACE>-env-<BRANCH_SLUG>
+          ports:
+            - containerPort: 3000
+          resources:
+            limits:
+              cpu: <LIMIT_NUXT_CPU>
+              memory: <LIMIT_NUXT_MEMORY>
+            requests:
+              cpu: <REQUESTED_NUXT_CPU>
+              memory: <REQUESTED_NUXT_MEMORY>
+      imagePullSecrets:
+        - name: gitlab-awescode-registry

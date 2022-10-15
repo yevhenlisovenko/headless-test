@@ -1,0 +1,15 @@
+{
+  "private": true,
+  "scripts": {
+    "build": "nuxt build",
+    "dev": "yarn dev:e2e",
+    "dev:local": "NUXT_PUBLIC_API_BASE=http://localhost:5398 nuxt dev",
+    "dev:e2e": "NUXT_PUBLIC_API_BASE=https://e2e.dev.easyweek.io nuxt dev",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview"
+  },
+  "devDependencies": {
+    "nuxt": "3.0.0-rc.4"
+  },
+  "dependencies": {}
+}

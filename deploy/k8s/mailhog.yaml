@@ -1,0 +1,31 @@
+# INSTRUCTION
+# 
+# Git: https://github.com/codecentric/helm-charts/tree/master/charts/mailhog
+#
+# helm repo add codecentric https://codecentric.github.io/helm-charts
+# helm install mailhog-mailhog codecentric/mailhog --namespace e2e
+
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: easyweek-mailhog-e2e
+  annotations:
+    kubernetes.io/ingress.class: "nginx"
+    ingress.kubernetes.io/force-ssl-redirect: 'true'
+    cert-manager.io/issuer: "letsencrypt-prod"
+spec:
+  tls:
+  - hosts:
+      - "e2e-mail.easyweek.io"
+    secretName: e2e-mail-easyweek-io-tls
+  rules:
+  - host: "e2e-mail.easyweek.io"
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: mailhog-mailhog
+            port:
+              number: 8025

@@ -1,0 +1,17 @@
+node_modules
+/api/docker/postgresql
+/api/docker/redis
+/api/docker/mysql
+/front/storage/app/nuxt
+/front/_nuxt/
+/front/.nuxt/
+yarn-error.log
+.idea
+.composer
+.nuxt
+.cache/
+.config
+.hhvm.hhbc
+.local
+.yalc
+yalc.lock

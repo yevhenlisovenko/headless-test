@@ -1,0 +1,122 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+  labels:
+    app: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 33%
+  template:
+    metadata:
+      labels:
+        app: <SERVICE_NAME>-<NAMESPACE>-<BRANCH_SLUG>
+    spec:
+      volumes:
+        # Create the shared files volume to be used in both pods
+        - name: shared-files
+          emptyDir: {}
+
+        # Add the ConfigMap we declared above as a volume for the pod
+        - name: nginx-config-volume
+          configMap:
+            name: <SERVICE_NAME>-<NAMESPACE>-nginx-config-<BRANCH_SLUG>
+      initContainers:
+        - name: cache-clear
+          args:
+            - /bin/sh
+            - -c
+            - php artisan clear || true
+          envFrom:
+            - configMapRef:
+                name: <SERVICE_NAME>-<NAMESPACE>-env-<BRANCH_SLUG>
+          image: <SERVICE_GIT_URL>:<VERSION>
+          imagePullPolicy: IfNotPresent
+        - name: create-database
+          args:
+            - /bin/sh
+            - -c
+            - php artisan db:create
+          envFrom:
+            - configMapRef:
+                name: <SERVICE_NAME>-<NAMESPACE>-env-<BRANCH_SLUG>
+          image: <SERVICE_GIT_URL>:<VERSION>
+          imagePullPolicy: IfNotPresent
+        - name: migrate-database
+          args:
+            - /bin/sh
+            - -c
+            - php artisan migrate:fresh --force
+            - DB_CONNECTION=testing php artisan migrate:fresh
+          envFrom:
+            - configMapRef:
+                name: <SERVICE_NAME>-<NAMESPACE>-env-<BRANCH_SLUG>
+          image: <SERVICE_GIT_URL>:<VERSION>
+          imagePullPolicy: IfNotPresent
+        - name: seed-database
+          args:
+            - /bin/sh
+            - -c
+            - (php artisan db:seed || true) && (DB_CONNECTION=testing php artisan db:seed --database=testing || true)
+          envFrom:
+            - configMapRef:
+                name: <SERVICE_NAME>-<NAMESPACE>-env-<BRANCH_SLUG>
+          image: <SERVICE_GIT_URL>:<VERSION>
+          imagePullPolicy: IfNotPresent
+      containers:
+        - name: php-container
+          imagePullPolicy: IfNotPresent
+          image: <SERVICE_GIT_URL>:<VERSION>
+          envFrom:
+          - configMapRef:
+              name: <SERVICE_NAME>-<NAMESPACE>-env-<BRANCH_SLUG>
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+          lifecycle:
+            postStart:
+              exec:
+                command: ["/bin/sh", "-c", "cp -r /app/. /var/www/html"]
+          ports:
+            - containerPort: 9000
+          resources:
+            limits:
+              cpu: <LIMIT_NUXT_CPU>
+              memory: <LIMIT_NUXT_MEMORY>
+            requests:
+              cpu: <REQUESTED_NUXT_CPU>
+              memory: <REQUESTED_NUXT_MEMORY>
+        - name: docker.io/bitnami/openresty:1.21
+          image: 
+          volumeMounts:
+            - name: shared-files
+              mountPath: /var/www/html
+            - name: nginx-config-volume
+              mountPath: /opt/bitnami/openresty/nginx/conf/server_blocks/nginx.conf
+              subPath: nginx.conf
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /api/ping
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            successThreshold: 1
+          resources:
+            limits:
+              cpu: <LIMIT_NGINX_CPU>
+              memory: <LIMIT_NGINX_MEMORY>
+            requests:
+              cpu: <REQUESTED_NGINX_CPU>
+              memory: <REQUESTED_NGINX_MEMORY>
+
+      imagePullSecrets:
+        - name: gitlab-awescode-registry

@@ -1,0 +1,54 @@
+{
+  "name": "easyweek-website-business",
+  "private": true,
+  "version": "0.1.0",
+  "author": "Awescode GmbH",
+  "devDependencies": {
+    "@commitlint/cli": "^16.1",
+    "@commitlint/config-conventional": "^16.0",
+    "@prettier/plugin-php": "^0.18",
+    "@semantic-release/changelog": "^6.0",
+    "@semantic-release/git": "^8.0",
+    "@semantic-release/gitlab-config": "^10.0",
+    "@semantic-release/npm": "^9.0",
+    "@semantic-release/release-notes-generator": "^9.0.2",
+    "eslint": "^6.0.0",
+    "eslint-config-prettier": "^8.0",
+    "eslint-plugin-prettier": "^4.0",
+    "eslint-plugin-vue": "^8.4",
+    "prettier": "^2.5"
+  },
+  "husky": {
+    "hooks": {
+      "commit-msg": "commitlint -E HUSKY_GIT_PARAMS"
+    }
+  },
+  "release": {
+    "branches": [
+      {
+        "name": "master"
+      },
+      {
+        "name": "<DEV>",
+        "prerelease": "<DEV>"
+      }
+    ],
+    "extends": "@semantic-release/gitlab-config",
+    "plugins": [
+      "@semantic-release/commit-analyzer",
+      "@semantic-release/release-notes-generator",
+      [
+        "@semantic-release/npm",
+        {
+          "npmPublish": false
+        }
+      ],
+      [
+        "@semantic-release/gitlab",
+        {
+          "gitlabUrl": "https://gitlab.awescode.com"
+        }
+      ]
+    ]
+  }
+}

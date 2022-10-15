@@ -1,0 +1,547 @@
+#################################################################################
+####### VARIABLES ###############################################################
+#################################################################################
+
+
+variables:
+  GITLAB_URL: $SHARED_GITLAB_URL
+  DOCKER_USERNAME: $SHARED_DOCKER_USERNAME
+  DOCKER_PASSWORD: $SHARED_DOCKER_PASSWORD
+  DOCKER_EMAIL: $SHARED_DOCKER_EMAIL
+  SERVICE_NAME: $GITLAB_SERVICE_NAME
+  SERVICE_URL: $GITLAB_SERVICE_URL
+  SERVICE_GIT_URL: $REPOSITORY
+  LIMIT_NUXT_CPU: '1'
+  LIMIT_NUXT_MEMORY: '1024M'
+  REQUESTED_NUXT_CPU: '500m'
+  REQUESTED_NUXT_MEMORY: '512M'
+  
+
+#################################################################################
+####### STAGES ##################################################################
+#################################################################################
+
+stages:
+  - release
+  - build
+  - reset
+  - app
+  - supervisor
+  - tests
+  - live
+
+#################################################################################
+####### HELPERS #################################################################
+#################################################################################
+.img_kubectl: &IMG_KUBE
+  image: awescodehub/kubectl:1.0.1
+
+.img_testcafe: &IMG_TESTCAFE
+  image:
+    name: awescodehub/awescodehub-docker-npm:1.0.6
+    entrypoint: ["/bin/sh", "-c"]
+
+.img_nodes: &IMG_NODES
+  image: node:16-alpine
+
+.install_nodes: &INSTALL_NODES
+  before_script:
+    - echo $CI_COMMIT_REF_NAME
+    # change template variable to current branch name
+    - sed -i "s/<DEV>/${CI_COMMIT_REF_NAME}/g" ./package.json
+    
+    - apk add --no-cache git
+    - yarn install --pure-lockfile --cache-folder .yarn
+
+.cache_nodes: &CACHE_NODES
+  cache:
+    key: $CI_PROJECT_ID
+    untracked: true
+    paths:
+      - .yarn
+      - node_modules/
+
+.base_release: &BASE_RELEASE
+  stage: release
+  <<: *IMG_NODES
+  <<: *CACHE_NODES
+  <<: *INSTALL_NODES
+  variables:
+    KUBE_ACCESS: $KUBE_HETZNER_DEV_CONFIG
+  script:
+    - GITLAB_TOKEN=${GITLAB_TOKEN} npx semantic-release --branch ${CI_COMMIT_REF_NAME}
+
+.base_build: &BASE_BUILD
+  stage: build
+  only:
+    - tags
+
+.base_tests: &BASE_TESTS
+  stage: tests
+  only:
+    - tags
+
+
+.branch_slug: &BRANCH_SLUG
+  before_script:
+    - export BRANCH_SLUG=$(echo ${CI_COMMIT_REF_SLUG} | sed 's/[a-z0-9-]*-*\(feat-[a-zA-Z0-9-]*\)-[0-9]*/\1/')
+
+
+.base_deploy: &BASE_DEPLOY
+  stage: app
+  <<: *IMG_KUBE
+  script:
+    # apply kube config
+    - echo -n $KUBE_ACCESS | base64 -d > $HOME/.kube/config
+
+    # ssl letsencript
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/k8s/letsencrypt-prod.yaml
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/k8s/letsencrypt-prod.yaml
+
+    # secret key to get access to download the image
+    - kubectl -n $BRANCH_SLUG delete secret docker-registry gitlab-awescode-registry --ignore-not-found=true hpa ${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG}
+    - kubectl -n $BRANCH_SLUG create secret docker-registry gitlab-awescode-registry --docker-server=$GITLAB_URL --docker-username=$DOCKER_USERNAME --docker-password=$DOCKER_PASSWORD --docker-email=$DOCKER_EMAIL
+
+    
+
+    # env
+    # replace
+    - sed -i "s/<REDIS_HOST>/${REDIS_HOST}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REDIS_PORT>/${REDIS_PORT}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REDIS_PASSWORD>/${REDIS_PASSWORD}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+
+    - sed -i "s/<NAMESPACE>/${NAMESPACE}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<SERVICE_NAME>/${SERVICE_NAME}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<CI_COMMIT_TAG>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<GOOGLE_BUCKET>/${GOOGLE_BUCKET}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<KUBE_ENVIRONMENT>/${KUBE_ENVIRONMENT}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<SERVICE_URL>/${SERVICE_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<SERVICE_GIT_URL>/${SERVICE_GIT_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<VERSION>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<TIMESTAMP>/$(date +"%d.%m.%Y %H:%M")/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<LIMIT_NUXT_CPU>/${LIMIT_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<LIMIT_NUXT_MEMORY>/${LIMIT_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REQUESTED_NUXT_CPU>/${REQUESTED_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REQUESTED_NUXT_MEMORY>/${REQUESTED_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    
+    # print
+    - cat ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+
+    # apply
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+
+
+    # main application
+    # replace
+    - sed -i "s/<NAMESPACE>/${NAMESPACE}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<SERVICE_NAME>/${SERVICE_NAME}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<CI_COMMIT_TAG>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<GOOGLE_BUCKET>/${GOOGLE_BUCKET}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<KUBE_ENVIRONMENT>/${KUBE_ENVIRONMENT}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<SERVICE_URL>/${SERVICE_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<SERVICE_GIT_URL>/${SERVICE_GIT_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<VERSION>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<TIMESTAMP>/$(date +"%d.%m.%Y %H:%M")/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<LIMIT_NUXT_CPU>/${LIMIT_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<LIMIT_NUXT_MEMORY>/${LIMIT_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<REQUESTED_NUXT_CPU>/${REQUESTED_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    - sed -i "s/<REQUESTED_NUXT_MEMORY>/${REQUESTED_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+    
+    # print
+    - cat ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+
+    # apply
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/${KUBE_ENVIRONMENT}/deployment-${ACTION_TYPE}.yaml
+
+
+
+    # ingress
+    # replace
+    - sed -i "s/<NAMESPACE>/${NAMESPACE}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<SERVICE_NAME>/${SERVICE_NAME}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<CI_COMMIT_TAG>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<GOOGLE_BUCKET>/${GOOGLE_BUCKET}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<KUBE_ENVIRONMENT>/${KUBE_ENVIRONMENT}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<SERVICE_URL>/${SERVICE_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<SERVICE_GIT_URL>/${SERVICE_GIT_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<VERSION>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<TIMESTAMP>/$(date +"%d.%m.%Y %H:%M")/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<LIMIT_NUXT_CPU>/${LIMIT_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<LIMIT_NUXT_MEMORY>/${LIMIT_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<REQUESTED_NUXT_CPU>/${REQUESTED_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<REQUESTED_NUXT_MEMORY>/${REQUESTED_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    
+    # print
+    - cat ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+
+    # apply
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+
+
+
+    # await for deployment get ready
+    - kubectl -n $BRANCH_SLUG wait --for=condition=available deployment/${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG} --timeout=360s
+    # await for rollout all pods
+    - kubectl -n $BRANCH_SLUG rollout status deployment ${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG}
+    # await 10 sec for finishing and termination of the old pod
+    - sleep 20
+    # await for pods get ready
+    - kubectl -n $BRANCH_SLUG wait --for=condition=ready pod -l app=${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG} --timeout=360s
+    
+    # autoscale for app
+    - kubectl -n $BRANCH_SLUG delete --ignore-not-found=true hpa ${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG}
+    - kubectl -n $BRANCH_SLUG autoscale deployment ${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG} --cpu-percent=50 --min=1 --max=1
+
+  
+
+
+    # back config to empty
+    - echo -n "" | base64 -d > $HOME/.kube/config
+
+
+.branch_templage: &BRANCH_TEMPLATE
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    url: https://$BRANCH_SLUG.$GITLAB_SERVICE_URL
+    # auto_stop_in: 14 days
+    # on_stop: deploy:branch:delete # commented to check this
+
+.event_create_branch: &EVENT_CREATE_BRANCH
+  only:
+    variables:
+      - $CI_COMMIT_TAG =~ /-feat-/i && $CI_COMMIT_MESSAGE =~ /\[init\]/i
+
+.event_update_branch: &EVENT_UPDATE_BRANCH
+  only:
+    variables:
+      - $CI_COMMIT_TAG =~ /-feat-/i && $CI_COMMIT_MESSAGE !~ /\[init\]/i
+
+.event_branch: &EVENT_BRANCH
+  only:
+    variables:
+      - $CI_COMMIT_TAG =~ /-feat-/i
+
+.event_delete_branch: &EVENT_DELETE_BRANCH
+  only:
+    variables:
+      - $CI_COMMIT_TAG =~ /-feat-/i && $CI_COMMIT_MESSAGE =~ /\[reset\]/i
+  except:
+    - master
+
+.event_update_e2e: &EVENT_UPDATE_E2E
+  only:
+    - tags
+  except:
+    variables:
+      - $CI_COMMIT_TAG =~ /-feat-/i
+
+.event_branch_test: &EVENT_BRANCH_TEST
+  only:
+    variables:
+      - $CI_COMMIT_TAG =~ /-feat-/i && $CI_COMMIT_MESSAGE !~ /\[fast\]/i
+
+.event_e2e_test: &EVENT_E2E_TEST
+  only:
+    - tags
+  except:
+    variables:
+      - $CI_COMMIT_TAG =~ /-feat-/i || $CI_COMMIT_MESSAGE =~ /\[fast\]/i
+
+
+
+
+#################################################################################
+####### RELEASE STAGE ###########################################################
+#################################################################################
+
+# RELEASES ##########
+release:branch:
+  <<: *BASE_RELEASE
+  only:
+    - /^feat-[0-9a-zA-Z_-]+$/
+
+release:e2e:
+  <<: *BASE_RELEASE
+  only:
+    - master
+
+#################################################################################
+####### BUILD STAGE #############################################################
+#################################################################################
+
+# BUILDS ############
+
+build:front:
+  <<: *BASE_BUILD
+  script:
+    # Required!
+    - cd front
+
+    # login to docker
+    - docker login -u gitlab-ci-token -p "$CI_BUILD_TOKEN" "$CI_REGISTRY"
+
+    # build universal docker image for new version
+    - docker build -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG-front" .
+    - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_TAG-front"
+
+    # clear cache
+    - docker system prune -af --volumes
+  tags:
+    - shell-runner
+
+
+#################################################################################
+####### DEPLOY ##################################################################
+#################################################################################
+
+# DEPLOY BRANCH ###########
+
+deploy:branch:reset:
+  <<: *IMG_KUBE
+  <<: *BRANCH_TEMPLATE
+  <<: *EVENT_DELETE_BRANCH
+  <<: *BRANCH_SLUG
+  stage: reset
+  variables:
+    KUBE_ACCESS: $KUBE_HETZNER_DEV_CONFIG
+  script:
+    # apply kube config
+    - echo -n $KUBE_ACCESS | base64 -d > $HOME/.kube/config
+
+    # Create dedicated namespace to deploy in (delete first, if it already exists):
+    - kubectl get namespace $BRANCH_SLUG && kubectl delete --ignore-not-found=true namespace $BRANCH_SLUG || true
+    - kubectl create namespace $BRANCH_SLUG
+
+
+deploy:branch:create:
+  <<: *BASE_DEPLOY
+  <<: *BRANCH_SLUG
+  <<: *BRANCH_TEMPLATE
+  when: on_success
+  variables:
+    KUBE_ENVIRONMENT: "dev"
+    KUBE_ACCESS: $KUBE_HETZNER_DEV_CONFIG
+    ACTION_TYPE: "create"
+    NAMESPACE: "dev"
+    REDIS_HOST: $DEV_REDIS_HOST
+    REDIS_PORT: $DEV_REDIS_PORT
+    REDIS_PASSWORD: ""
+  <<: *EVENT_CREATE_BRANCH
+
+# deploy:branch:create-supervisor:
+#   <<: *SUPERVISOR_DEPLOY
+#   <<: *BRANCH_SLUG
+#   <<: *BRANCH_TEMPLATE
+#   when: on_success
+#   variables:
+#     KUBE_ENVIRONMENT: "dev"
+#     NAMESPACE: "dev"
+#     KUBE_ACCESS: $KUBE_HETZNER_DEV_CONFIG
+#   <<: *EVENT_CREATE_BRANCH
+
+deploy:branch:update:
+  <<: *BASE_DEPLOY
+  <<: *BRANCH_SLUG
+  <<: *BRANCH_TEMPLATE
+  when: on_success
+  variables:
+    KUBE_ENVIRONMENT: "dev"
+    KUBE_ACCESS: $KUBE_HETZNER_DEV_CONFIG
+    ACTION_TYPE: "update"
+    NAMESPACE: "dev"
+    REDIS_HOST: $DEV_REDIS_HOST
+    REDIS_PORT: $DEV_REDIS_PORT
+    REDIS_PASSWORD: ""
+  <<: *EVENT_UPDATE_BRANCH
+
+# deploy:branch:supervisor:
+#   <<: *SUPERVISOR_DEPLOY
+#   <<: *BRANCH_SLUG
+#   <<: *BRANCH_TEMPLATE
+#   when: on_success
+#   variables:
+#     KUBE_ENVIRONMENT: "dev"
+#     NAMESPACE: "dev"
+#     KUBE_ACCESS: $KUBE_HETZNER_DEV_CONFIG
+#   <<: *EVENT_UPDATE_BRANCH
+
+
+deploy:branch:delete:
+  <<: *IMG_KUBE
+  stage: app
+  when: manual
+  <<: *BRANCH_SLUG
+  script:
+    # apply kube config
+    - echo -n $KUBE_HETZNER_DEV_CONFIG | base64 -d > $HOME/.kube/config
+    # Dete namespace
+    - kubectl delete --ignore-not-found=true namespace $BRANCH_SLUG
+    # back config to empty
+    - echo -n "" | base64 -d > $HOME/.kube/config
+  # This job must not have any dependencies, otherwise it will refuse to run
+  # when the artifact retention of previous jobs has expired:
+  dependencies: []
+  environment:
+    name: review/$CI_COMMIT_REF_NAME
+    action: stop
+  variables:
+    # Disable checkout here because the ref might not be available anymore
+    GIT_STRATEGY: none
+  <<: *EVENT_DELETE_BRANCH
+
+
+
+# DEPLOY E2E ###########
+
+deploy:e2e:update:
+  <<: *BASE_DEPLOY
+  when: on_success
+  variables:
+    KUBE_ENVIRONMENT: "dev"
+    NAMESPACE: "e2e"
+    KUBE_ACCESS: $KUBE_HETZNER_DEV_CONFIG
+    BRANCH_SLUG: "e2e"
+    ACTION_TYPE: "update"
+    REDIS_HOST: $DEV_REDIS_HOST
+    REDIS_PORT: $DEV_REDIS_PORT
+    REDIS_PASSWORD: ""
+  <<: *EVENT_UPDATE_E2E
+
+
+#################################################################################
+####### TESTS ###################################################################
+#################################################################################
+
+
+
+#################################################################################
+####### LIVE ####################################################################
+#################################################################################
+
+
+live:
+  <<: *IMG_KUBE
+  stage: live
+  when: manual
+  variables:
+    BRANCH_SLUG: "live"
+    KUBE_ENVIRONMENT: "live"
+    NAMESPACE: "live"
+    KUBE_ACCESS: $KUBE_LIVE_CONFIG
+    REDIS_HOST: $LIVE_REDIS_HOST
+    REDIS_PORT: $LIVE_REDIS_PORT
+    REDIS_PASSWORD: $LIVE_REDIS_PASSWORD
+  script:
+    # apply kube config
+    - echo -n $KUBE_ACCESS | base64 -d > $HOME/.kube/config
+    # deploy to kube
+    
+    # ssl letsencript
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/k8s/letsencrypt-prod.yaml
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/k8s/letsencrypt-prod.yaml
+
+    # secret key to get access to download the image
+    - kubectl -n $BRANCH_SLUG delete secret docker-registry gitlab-awescode-registry --ignore-not-found=true hpa ${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG}
+    - kubectl -n $BRANCH_SLUG create secret docker-registry gitlab-awescode-registry --docker-server=$GITLAB_URL --docker-username=$DOCKER_USERNAME --docker-password=$DOCKER_PASSWORD --docker-email=$DOCKER_EMAIL
+
+    # env    
+    # replace
+    - sed -i "s/<REDIS_HOST>/${REDIS_HOST}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REDIS_PORT>/${REDIS_PORT}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REDIS_PASSWORD>/${REDIS_PASSWORD}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+
+    - sed -i "s/<NAMESPACE>/${NAMESPACE}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<SERVICE_NAME>/${SERVICE_NAME}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<CI_COMMIT_TAG>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<GOOGLE_BUCKET>/${GOOGLE_BUCKET}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<KUBE_ENVIRONMENT>/${KUBE_ENVIRONMENT}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<SERVICE_URL>/${SERVICE_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<SERVICE_GIT_URL>/${SERVICE_GIT_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<VERSION>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<TIMESTAMP>/$(date +"%d.%m.%Y %H:%M")/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<LIMIT_NUXT_CPU>/${LIMIT_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<LIMIT_NUXT_MEMORY>/${LIMIT_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REQUESTED_NUXT_CPU>/${REQUESTED_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    - sed -i "s/<REQUESTED_NUXT_MEMORY>/${REQUESTED_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+    
+    # print
+    - cat ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+
+    # apply
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/${KUBE_ENVIRONMENT}/env.yaml
+
+
+
+    # main application
+    # replace
+    - sed -i "s/<NAMESPACE>/${NAMESPACE}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<SERVICE_NAME>/${SERVICE_NAME}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<CI_COMMIT_TAG>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<GOOGLE_BUCKET>/${GOOGLE_BUCKET}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<KUBE_ENVIRONMENT>/${KUBE_ENVIRONMENT}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<SERVICE_URL>/${SERVICE_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<SERVICE_GIT_URL>/${SERVICE_GIT_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<VERSION>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<TIMESTAMP>/$(date +"%d.%m.%Y %H:%M")/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<LIMIT_NUXT_CPU>/${LIMIT_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<LIMIT_NUXT_MEMORY>/${LIMIT_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<REQUESTED_NUXT_CPU>/${REQUESTED_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    - sed -i "s/<REQUESTED_NUXT_MEMORY>/${REQUESTED_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+    
+    # print
+    - cat ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+
+    # apply
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/${KUBE_ENVIRONMENT}/deployment-update.yaml
+
+
+
+    # ingress
+    # replace
+    - sed -i "s/<NAMESPACE>/${NAMESPACE}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<SERVICE_NAME>/${SERVICE_NAME}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<BRANCH_SLUG>/${BRANCH_SLUG}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<CI_COMMIT_TAG>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<GOOGLE_BUCKET>/${GOOGLE_BUCKET}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<KUBE_ENVIRONMENT>/${KUBE_ENVIRONMENT}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<SERVICE_URL>/${SERVICE_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<SERVICE_GIT_URL>/${SERVICE_GIT_URL}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<VERSION>/${CI_COMMIT_TAG}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<TIMESTAMP>/$(date +"%d.%m.%Y %H:%M")/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<LIMIT_NUXT_CPU>/${LIMIT_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<LIMIT_NUXT_MEMORY>/${LIMIT_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<REQUESTED_NUXT_CPU>/${REQUESTED_NUXT_CPU}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    - sed -i "s/<REQUESTED_NUXT_MEMORY>/${REQUESTED_NUXT_MEMORY}/g" ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+    
+    # print
+    - cat ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+
+    # apply
+    - kubectl -n $BRANCH_SLUG apply -f ./deploy/${KUBE_ENVIRONMENT}/ingress.yaml
+
+
+
+    # await for deployment get ready
+    - kubectl -n $BRANCH_SLUG wait --for=condition=available deployment/${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG} --timeout=360s
+    # await for rollout all pods
+    - kubectl -n $BRANCH_SLUG rollout status deployment ${SERVICE_NAME}-${NAMESPACE}
+    # await 10 sec for finishing and termination of the old pod
+    - sleep 20
+    # await for pods get ready
+    - kubectl -n $BRANCH_SLUG wait --for=condition=ready pod -l app=${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG} --timeout=360s
+
+    # autoscale for app
+    - kubectl -n $BRANCH_SLUG delete --ignore-not-found=true hpa ${SERVICE_NAME}-${NAMESPACE}
+    - kubectl -n $BRANCH_SLUG autoscale deployment ${SERVICE_NAME}-${NAMESPACE}-${BRANCH_SLUG} --cpu-percent=70 --min=1 --max=1
+
+
+
+    # back config to empty
+    - echo -n "" | base64 -d > $HOME/.kube/config
+  
+  <<: *EVENT_UPDATE_E2E
